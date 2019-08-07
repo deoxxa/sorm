@@ -227,7 +227,17 @@ func FindFirst(ctx context.Context, db Querier, out interface{}) error {
 	return FindFirstWhere(ctx, db, out, "")
 }
 
+type BeforeSaver interface {
+	BeforeSave(ctx context.Context, tx *sql.Tx) error
+}
+
 func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
+	if v, ok := input.(BeforeSaver); ok {
+		if err := v.BeforeSave(ctx, tx); err != nil {
+			return errors.Errorf("SaveRecord: BeforeSave callback returned an error")
+		}
+	}
+
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
 		return errors.Errorf("SaveRecord: expected input to be a pointer; was instead %s", ptr.Kind())
@@ -286,19 +296,29 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	return nil
 }
 
+type BeforeCreater interface {
+	BeforeCreate(ctx context.Context, tx *sql.Tx) error
+}
+
 func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
+	if v, ok := input.(BeforeCreater); ok {
+		if err := v.BeforeCreate(ctx, tx); err != nil {
+			return errors.Errorf("CreateRecord: BeforeCreate callback returned an error")
+		}
+	}
+
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected input to be a pointer; was instead %s", ptr.Kind())
+		return errors.Errorf("CreateRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return errors.Errorf("CreateRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("expected input to have an ID field")
+		return errors.Errorf("CreateRecord: expected input to have an ID field")
 	}
 
 	var a1, a2 []string
@@ -336,19 +356,29 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	return nil
 }
 
+type BeforeReplacer interface {
+	BeforeReplace(ctx context.Context, tx *sql.Tx) error
+}
+
 func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
+	if v, ok := input.(BeforeReplacer); ok {
+		if err := v.BeforeReplace(ctx, tx); err != nil {
+			return errors.Errorf("ReplaceRecord: BeforeReplace callback returned an error")
+		}
+	}
+
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected input to be a pointer; was instead %s", ptr.Kind())
+		return errors.Errorf("ReplaceRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return errors.Errorf("ReplaceRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("expected input to have an ID field")
+		return errors.Errorf("ReplaceRecord: expected input to have an ID field")
 	}
 
 	var a1, a2 []string
@@ -374,7 +404,17 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	return nil
 }
 
+type BeforeDeleter interface {
+	BeforeDelete(ctx context.Context, tx *sql.Tx) error
+}
+
 func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
+	if v, ok := input.(BeforeDeleter); ok {
+		if err := v.BeforeDelete(ctx, tx); err != nil {
+			return errors.Errorf("DeleteRecord: BeforeDelete callback returned an error")
+		}
+	}
+
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
 		return errors.Errorf("expected input to be a pointer; was instead %s", ptr.Kind())
