@@ -234,7 +234,7 @@ type BeforeSaver interface {
 func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeSaver); ok {
 		if err := v.BeforeSave(ctx, tx); err != nil {
-			return errors.Errorf("SaveRecord: BeforeSave callback returned an error")
+			return errors.Wrap(err, "SaveRecord: BeforeSave callback returned an error")
 		}
 	}
 
@@ -303,7 +303,7 @@ type BeforeCreater interface {
 func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeCreater); ok {
 		if err := v.BeforeCreate(ctx, tx); err != nil {
-			return errors.Errorf("CreateRecord: BeforeCreate callback returned an error")
+			return errors.Wrap(err, "CreateRecord: BeforeCreate callback returned an error")
 		}
 	}
 
@@ -363,7 +363,7 @@ type BeforeReplacer interface {
 func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeReplacer); ok {
 		if err := v.BeforeReplace(ctx, tx); err != nil {
-			return errors.Errorf("ReplaceRecord: BeforeReplace callback returned an error")
+			return errors.Wrap(err, "ReplaceRecord: BeforeReplace callback returned an error")
 		}
 	}
 
@@ -411,7 +411,7 @@ type BeforeDeleter interface {
 func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeDeleter); ok {
 		if err := v.BeforeDelete(ctx, tx); err != nil {
-			return errors.Errorf("DeleteRecord: BeforeDelete callback returned an error")
+			return errors.Wrap(err, "DeleteRecord: BeforeDelete callback returned an error")
 		}
 	}
 
