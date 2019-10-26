@@ -231,6 +231,24 @@ type BeforeSaver interface {
 	BeforeSave(ctx context.Context, tx *sql.Tx) error
 }
 
+func SaveRecordWithTransaction(ctx context.Context, db *sql.DB, input interface{}) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return errors.Wrap(err, "SaveRecordWithTransaction: couldn't open a transaction")
+	}
+	defer tx.Rollback()
+
+	if err := SaveRecord(ctx, tx, input); err != nil {
+		return errors.Wrap(err, "SaveRecordWithTransaction")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return errors.Wrap(err, "SaveRecordWithTransaction: couldn't commit transaction")
+	}
+
+	return nil
+}
+
 func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeSaver); ok {
 		if err := v.BeforeSave(ctx, tx); err != nil {
