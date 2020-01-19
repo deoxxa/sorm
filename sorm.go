@@ -473,6 +473,6 @@ func isZero(i interface{}) bool {
 	case nil:
 		return true
 	default:
-		panic(fmt.Sprintf("Found unexpected type %T in isZero (value=%v)", i, i))
+		return reflect.ValueOf(i).IsZero()
 	}
 }
