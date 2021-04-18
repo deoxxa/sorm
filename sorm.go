@@ -21,12 +21,48 @@ func getSQLTableName(t reflect.Type) string {
 	return snaker.CamelToSnake(t.Name()) + "s"
 }
 
-func getSQLColumnName(f reflect.StructField) string {
-	if a := strings.Split(f.Tag.Get("sql"), ","); a[0] != "" {
-		return a[0]
+func getSQLColumnInfo(f reflect.StructField) (string, []string) {
+	a := strings.Split(f.Tag.Get("sql"), ",")
+	if a[0] == "" {
+		a[0] = snaker.CamelToSnake(f.Name)
 	}
 
-	return snaker.CamelToSnake(f.Name)
+	return a[0], a[1:]
+}
+
+func getSQLColumnName(f reflect.StructField) string {
+	name, _ := getSQLColumnInfo(f)
+	return name
+}
+
+func arrayHas(a []string, s string) bool {
+	for _, e := range a {
+		if e == s {
+			return true
+		}
+	}
+
+	return false
+}
+
+func getSQLIDFields(t reflect.Type) []string {
+	var r []string
+
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+
+		if _, info := getSQLColumnInfo(f); arrayHas(info, "id") {
+			r = append(r, f.Name)
+		}
+	}
+
+	if len(r) == 0 {
+		if _, ok := t.FieldByName("ID"); ok {
+			r = append(r, "ID")
+		}
+	}
+
+	return r
 }
 
 func TableName(v interface{}) string {
@@ -266,18 +302,34 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Errorf("SaveRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("SaveRecord: expected input to have an ID field")
+	idFields := getSQLIDFields(vtyp)
+	if len(idFields) == 0 {
+		return errors.Errorf("SaveRecord: couldn't determine ID field(s)")
+	}
+
+	var values []interface{}
+
+	var where string
+	for _, fieldName := range idFields {
+		f, _ := vtyp.FieldByName(fieldName)
+
+		if where == "" {
+			where += "where "
+		} else {
+			where += " and "
+		}
+
+		where += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
 	}
 
 	previous := reflect.New(vtyp)
-	if err := FindFirstWhere(ctx, tx, previous.Interface(), "where id = $1", ptr.Elem().FieldByName("ID").Interface()); err != nil {
+	if err := FindFirstWhere(ctx, tx, previous.Interface(), where, values...); err != nil {
 		return errors.Wrap(err, "SaveRecord: couldn't find record")
 	}
 
-	var query string
-	var values []interface{}
-
+	var fields string
+	var modify bool
 	for i := 0; i < vtyp.NumField(); i++ {
 		f := vtyp.Field(i)
 
@@ -289,23 +341,25 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			continue
 		}
 
-		if query != "" {
-			query += ", "
+		if fields == "" {
+			fields += "set "
+		} else {
+			fields += ", "
 		}
 
-		query += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		fields += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
 		values = append(values, ptr.Elem().Field(i).Interface())
+
+		modify = true
 	}
 
-	if len(values) == 0 {
+	if !modify {
 		return nil
 	}
 
 	tbl := getSQLTableName(vtyp)
 
-	values = append(values, ptr.Elem().FieldByName("ID").Interface())
-
-	q := fmt.Sprintf("update %s set %s where id = $%d", tbl, query, len(values))
+	q := fmt.Sprintf("update %s %s %s", tbl, fields, where)
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
 		return errors.Wrap(err, "SaveRecord")
@@ -335,18 +389,23 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Errorf("CreateRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("CreateRecord: expected input to have an ID field")
+	idFields := getSQLIDFields(vtyp)
+	if len(idFields) == 0 {
+		return errors.Errorf("CreateRecord: couldn't determine ID field(s)")
 	}
 
 	var a1, a2 []string
 	var values []interface{}
-	var fetchID bool
+	var basicID, fetchID bool
+
+	if len(idFields) == 1 && idFields[0] == "ID" {
+		basicID = true
+	}
 
 	for i := 0; i < vtyp.NumField(); i++ {
 		f := vtyp.Field(i)
 
-		if f.Name == "ID" && isZero(ptr.Elem().Field(i).Interface()) {
+		if basicID && f.Name == "ID" && isZero(ptr.Elem().Field(i).Interface()) {
 			fetchID = true
 			continue
 		}
@@ -365,7 +424,7 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Wrap(err, "CreateRecord")
 	}
 
-	if fetchID {
+	if basicID && fetchID {
 		if err := tx.QueryRowContext(ctx, "select last_insert_rowid()").Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
 			return errors.Wrap(err, "CreateRecord: couldn't fetch insert id")
 		}
@@ -395,8 +454,9 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Errorf("ReplaceRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("ReplaceRecord: expected input to have an ID field")
+	idFields := getSQLIDFields(vtyp)
+	if len(idFields) == 0 {
+		return errors.Errorf("ReplaceRecord: couldn't determine ID field(s)")
 	}
 
 	var a1, a2 []string
@@ -435,21 +495,40 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected input to be a pointer; was instead %s", ptr.Kind())
+		return errors.Errorf("DeleteRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return errors.Errorf("DeleteRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	if _, ok := vtyp.FieldByName("ID"); !ok {
-		return errors.Errorf("expected input to have an ID field")
+	idFields := getSQLIDFields(vtyp)
+	if len(idFields) == 0 {
+		return errors.Errorf("DeleteRecord: couldn't determine ID field(s)")
 	}
 
-	q := fmt.Sprintf("delete from %s where id = $1", getSQLTableName(vtyp))
+	var values []interface{}
 
-	if _, err := tx.ExecContext(ctx, q, ptr.Elem().FieldByName("ID").Interface()); err != nil {
+	var where string
+	for _, fieldName := range idFields {
+		f, _ := vtyp.FieldByName(fieldName)
+
+		if where == "" {
+			where += "where "
+		} else {
+			where += "and "
+		}
+
+		where += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
+	}
+
+	tbl := getSQLTableName(vtyp)
+
+	q := fmt.Sprintf("delete from %s %s", tbl, where)
+
+	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
 		return errors.Wrap(err, "DeleteRecord")
 	}
 
