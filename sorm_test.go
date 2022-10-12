@@ -250,3 +250,76 @@ func TestSaveRecordCompositeID(t *testing.T) {
 
 	_ = tx.Commit()
 }
+
+func TestSetParameterPrefix(t *testing.T) {
+	a := assert.New(t)
+
+	db, mock, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	SetParameterPrefix("?")
+	defer func() { SetParameterPrefix("") }()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mock.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, _ := db.Begin()
+
+	r := SimpleObject{ID: 1, Name: "test1_modified"}
+	a.NoError(SaveRecord(context.Background(), tx, &r))
+
+	a.Equal(SimpleObject{ID: 1, Name: "test1_modified"}, r)
+
+	_ = tx.Commit()
+}
+
+func TestResetParameterPrefix(t *testing.T) {
+	a := assert.New(t)
+
+	db, mock, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mock.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mock.ExpectExec(`update simple_objects set name = \$2 where id = \$1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	SetParameterPrefix("?")
+	defer func() { SetParameterPrefix("") }()
+
+	{
+		tx, _ := db.Begin()
+
+		r := SimpleObject{ID: 1, Name: "test1_modified"}
+		a.NoError(SaveRecord(context.Background(), tx, &r))
+
+		a.Equal(SimpleObject{ID: 1, Name: "test1_modified"}, r)
+
+		_ = tx.Commit()
+	}
+
+	SetParameterPrefix("")
+
+	{
+		tx, _ := db.Begin()
+
+		r := SimpleObject{ID: 1, Name: "test1_modified"}
+		a.NoError(SaveRecord(context.Background(), tx, &r))
+
+		a.Equal(SimpleObject{ID: 1, Name: "test1_modified"}, r)
+
+		_ = tx.Commit()
+	}
+}

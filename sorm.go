@@ -11,6 +11,23 @@ import (
 	"github.com/serenize/snaker"
 )
 
+var (
+	parameterPrefix string
+)
+
+func SetParameterPrefix(s string) {
+	parameterPrefix = s
+}
+
+func makeParameter(n int) string {
+	s := parameterPrefix
+	if s == "" {
+		s = "$"
+	}
+
+	return fmt.Sprintf("%s%d", s, n)
+}
+
 func getSQLTableName(t reflect.Type) string {
 	for i := 0; i < t.NumField(); i++ {
 		if s := t.Field(i).Tag.Get("table"); s != "" {
@@ -319,7 +336,7 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			where += " and "
 		}
 
-		where += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		where += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
 		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
 	}
 
@@ -347,7 +364,7 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			fields += ", "
 		}
 
-		fields += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		fields += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
 		values = append(values, ptr.Elem().Field(i).Interface())
 
 		modify = true
@@ -411,7 +428,7 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		}
 
 		a1 = append(a1, getSQLColumnName(f))
-		a2 = append(a2, fmt.Sprintf("$%d", len(a1)))
+		a2 = append(a2, makeParameter(len(a1)))
 
 		values = append(values, ptr.Elem().Field(i).Interface())
 	}
@@ -466,7 +483,7 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		f := vtyp.Field(i)
 
 		a1 = append(a1, getSQLColumnName(f))
-		a2 = append(a2, fmt.Sprintf("$%d", len(a1)))
+		a2 = append(a2, makeParameter(len(a1)))
 
 		values = append(values, ptr.Elem().Field(i).Interface())
 	}
@@ -520,7 +537,7 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			where += "and "
 		}
 
-		where += fmt.Sprintf("%s = $%d", getSQLColumnName(f), len(values)+1)
+		where += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
 		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
 	}
 
