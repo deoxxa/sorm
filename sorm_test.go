@@ -2,10 +2,13 @@ package sorm
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestTableName(t *testing.T) {
@@ -34,13 +37,13 @@ type Object struct {
 func TestFindWhere(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`select \* from objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectQuery(`select \* from objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
 
 	var r []Object
 	a.NoError(FindWhere(context.Background(), db, &r, "where id = $1", 1))
@@ -51,13 +54,13 @@ func TestFindWhere(t *testing.T) {
 func TestFindAll(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`select \* from objects`).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1").AddRow(2, "test2"))
+	mockDB.ExpectQuery(`select \* from objects`).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1").AddRow(2, "test2"))
 
 	var r []Object
 	a.NoError(FindAll(context.Background(), db, &r))
@@ -68,13 +71,13 @@ func TestFindAll(t *testing.T) {
 func TestFindFirstWhere(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`select \* from objects where id = \$1 limit 1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectQuery(`select \* from objects where id = \$1 limit 1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
 
 	var r Object
 	a.NoError(FindFirstWhere(context.Background(), db, &r, "where id = $1", 1))
@@ -85,13 +88,13 @@ func TestFindFirstWhere(t *testing.T) {
 func TestFindFirst(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`select \* from objects limit 1`).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectQuery(`select \* from objects limit 1`).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
 
 	var r Object
 	a.NoError(FindFirst(context.Background(), db, &r))
@@ -113,15 +116,15 @@ type CompositeIDObject struct {
 func TestCreateRecord(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`insert into simple_objects \(id, name\) values \(\$1, \$2\)`).WithArgs(1, "test1").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into simple_objects \(id, name\) values \(\$1, \$2\)`).WithArgs(1, "test1").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -136,16 +139,16 @@ func TestCreateRecord(t *testing.T) {
 func TestCreateRecordEmptyID(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`insert into simple_objects \(name\) values \(\$1\)`).WithArgs("test1").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into simple_objects \(name\) values \(\$1\)`).WithArgs("test1").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -160,15 +163,15 @@ func TestCreateRecordEmptyID(t *testing.T) {
 func TestCreateRecordCompositeID(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`insert into composite_id_objects \(id_1, id_2, name\) values \(\$1, \$2, \$3\)`).WithArgs(101, 201, "test1").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into composite_id_objects \(id_1, id_2, name\) values \(\$1, \$2, \$3\)`).WithArgs(101, 201, "test1").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -183,16 +186,16 @@ func TestCreateRecordCompositeID(t *testing.T) {
 func TestSaveRecord(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
-	mock.ExpectExec(`update simple_objects set name = \$2 where id = \$1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectExec(`update simple_objects set name = \$2 where id = \$1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -207,15 +210,15 @@ func TestSaveRecord(t *testing.T) {
 func TestSaveRecordNoChange(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -230,16 +233,16 @@ func TestSaveRecordNoChange(t *testing.T) {
 func TestSaveRecordCompositeID(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from composite_id_objects where id_1 = \$1 and id_2 = \$2`).WithArgs(101, 201).WillReturnRows(sqlmock.NewRows([]string{"id_1", "id_2", "name"}).AddRow(101, 201, "test1"))
-	mock.ExpectExec(`update composite_id_objects set name = \$3 where id_1 = $1 and id_2 = \$2`).WithArgs(101, 201, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from composite_id_objects where id_1 = \$1 and id_2 = \$2`).WithArgs(101, 201).WillReturnRows(sqlmock.NewRows([]string{"id_1", "id_2", "name"}).AddRow(101, 201, "test1"))
+	mockDB.ExpectExec(`update composite_id_objects set name = \$3 where id_1 = $1 and id_2 = \$2`).WithArgs(101, 201, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -254,7 +257,7 @@ func TestSaveRecordCompositeID(t *testing.T) {
 func TestSetParameterPrefix(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
@@ -263,10 +266,10 @@ func TestSetParameterPrefix(t *testing.T) {
 	SetParameterPrefix("?")
 	defer func() { SetParameterPrefix("") }()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
-	mock.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mockDB.ExpectCommit()
 
 	tx, _ := db.Begin()
 
@@ -281,20 +284,20 @@ func TestSetParameterPrefix(t *testing.T) {
 func TestResetParameterPrefix(t *testing.T) {
 	a := assert.New(t)
 
-	db, mock, err := sqlmock.New()
+	db, mockDB, err := sqlmock.New()
 	if !a.NoError(err) {
 		return
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
-	mock.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	mock.ExpectBegin()
-	mock.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
-	mock.ExpectExec(`update simple_objects set name = \$2 where id = \$1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from simple_objects where id = \?1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectExec(`update simple_objects set name = \?2 where id = \?1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mockDB.ExpectCommit()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery(`select \* from simple_objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+	mockDB.ExpectExec(`update simple_objects set name = \$2 where id = \$1`).WithArgs(1, "test1_modified").WillReturnResult(sqlmock.NewResult(0, 1))
+	mockDB.ExpectCommit()
 
 	SetParameterPrefix("?")
 	defer func() { SetParameterPrefix("") }()
@@ -323,3 +326,74 @@ func TestResetParameterPrefix(t *testing.T) {
 		_ = tx.Commit()
 	}
 }
+
+type TestBeforeCreateObject struct {
+	m *mock.Mock `sql:"-"`
+
+	ID   int
+	Name string
+}
+
+func (t *TestBeforeCreateObject) BeforeCreate(ctx context.Context, tx *sql.Tx) error {
+	return t.m.MethodCalled("BeforeCreate", ctx, tx).Error(0)
+}
+
+func TestBeforeCreateSuccess(t *testing.T) {
+	a := assert.New(t)
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into test_before_create_objects \(name\) values \(\$1\)`).WithArgs("a").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
+	mockDB.ExpectCommit()
+
+	ctx := context.Background()
+	tx, _ := db.BeginTx(ctx, nil)
+
+	m := &mock.Mock{}
+	m.On("BeforeCreate", ctx, tx).Return(error(nil))
+
+	r := TestBeforeCreateObject{m: m, Name: "a"}
+	a.NoError(CreateRecord(ctx, tx, &r))
+
+	a.Equal(1, r.ID)
+	a.Equal("a", r.Name)
+
+	a.NoError(tx.Commit())
+
+	m.AssertExpectations(t)
+}
+
+func TestBeforeCreateError(t *testing.T) {
+	a := assert.New(t)
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into test_before_create_objects \(name\) values \(\$1\)`).WithArgs("a").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
+	mockDB.ExpectCommit()
+
+	ctx := context.Background()
+	tx, _ := db.BeginTx(ctx, nil)
+
+	testErr := fmt.Errorf("test error")
+
+	m := &mock.Mock{}
+	m.On("BeforeCreate", ctx, tx).Return(testErr)
+
+	r := TestBeforeCreateObject{m: m, Name: "a"}
+	a.EqualError(CreateRecord(ctx, tx, &r), "CreateRecord: BeforeCreate callback returned an error: test error")
+
+	m.AssertExpectations(t)
+}
+
