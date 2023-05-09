@@ -397,3 +397,73 @@ func TestBeforeCreateError(t *testing.T) {
 	m.AssertExpectations(t)
 }
 
+type TestAfterCreateObject struct {
+	m *mock.Mock `sql:"-"`
+
+	ID   int
+	Name string
+}
+
+func (t *TestAfterCreateObject) AfterCreate(ctx context.Context, tx *sql.Tx) error {
+	return t.m.MethodCalled("AfterCreate", ctx, tx).Error(0)
+}
+
+func TestAfterCreateSuccess(t *testing.T) {
+	a := assert.New(t)
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into test_after_create_objects \(name\) values \(\$1\)`).WithArgs("a").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
+	mockDB.ExpectCommit()
+
+	ctx := context.Background()
+	tx, _ := db.BeginTx(ctx, nil)
+
+	m := &mock.Mock{}
+	m.On("AfterCreate", ctx, tx).Return(error(nil))
+
+	r := TestAfterCreateObject{m: m, Name: "a"}
+	a.NoError(CreateRecord(ctx, tx, &r))
+
+	a.Equal(1, r.ID)
+	a.Equal("a", r.Name)
+
+	a.NoError(tx.Commit())
+
+	m.AssertExpectations(t)
+}
+
+func TestAfterCreateError(t *testing.T) {
+	a := assert.New(t)
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`insert into test_after_create_objects \(name\) values \(\$1\)`).WithArgs("a").WillReturnResult(sqlmock.NewResult(1, 1))
+	mockDB.ExpectQuery(`select last_insert_rowid()`).WillReturnRows(sqlmock.NewRows([]string{"?"}).AddRow(1))
+	mockDB.ExpectCommit()
+
+	ctx := context.Background()
+	tx, _ := db.BeginTx(ctx, nil)
+
+	testErr := fmt.Errorf("test error")
+
+	m := &mock.Mock{}
+	m.On("AfterCreate", ctx, tx).Return(testErr)
+
+	r := TestAfterCreateObject{m: m, Name: "a"}
+	a.EqualError(CreateRecord(ctx, tx, &r), "CreateRecord: AfterCreate callback returned an error: test error")
+
+	m.AssertExpectations(t)
+}
+

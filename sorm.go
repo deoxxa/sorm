@@ -284,6 +284,10 @@ type BeforeSaver interface {
 	BeforeSave(ctx context.Context, tx *sql.Tx) error
 }
 
+type AfterSaver interface {
+	AfterSave(ctx context.Context, tx *sql.Tx) error
+}
+
 func SaveRecordWithTransaction(ctx context.Context, db *sql.DB, input interface{}) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -387,11 +391,21 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Wrap(err, "SaveRecord")
 	}
 
+	if v, ok := input.(AfterSaver); ok {
+		if err := v.AfterSave(ctx, tx); err != nil {
+			return errors.Wrap(err, "SaveRecord: AfterSave callback returned an error")
+		}
+	}
+
 	return nil
 }
 
 type BeforeCreater interface {
 	BeforeCreate(ctx context.Context, tx *sql.Tx) error
+}
+
+type AfterCreater interface {
+	AfterCreate(ctx context.Context, tx *sql.Tx) error
 }
 
 func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
@@ -457,11 +471,21 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		}
 	}
 
+	if v, ok := input.(AfterCreater); ok {
+		if err := v.AfterCreate(ctx, tx); err != nil {
+			return errors.Wrap(err, "CreateRecord: AfterCreate callback returned an error")
+		}
+	}
+
 	return nil
 }
 
 type BeforeReplacer interface {
 	BeforeReplace(ctx context.Context, tx *sql.Tx) error
+}
+
+type AfterReplacer interface {
+	AfterReplace(ctx context.Context, tx *sql.Tx) error
 }
 
 func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
@@ -511,11 +535,21 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return errors.Wrap(err, "ReplaceRecord")
 	}
 
+	if v, ok := input.(AfterReplacer); ok {
+		if err := v.AfterReplace(ctx, tx); err != nil {
+			return errors.Wrap(err, "ReplaceRecord: AfterReplace callback returned an error")
+		}
+	}
+
 	return nil
 }
 
 type BeforeDeleter interface {
 	BeforeDelete(ctx context.Context, tx *sql.Tx) error
+}
+
+type AfterDeleter interface {
+	AfterDelete(ctx context.Context, tx *sql.Tx) error
 }
 
 func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
@@ -562,6 +596,12 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
 		return errors.Wrap(err, "DeleteRecord")
+	}
+
+	if v, ok := input.(AfterDeleter); ok {
+		if err := v.AfterDelete(ctx, tx); err != nil {
+			return errors.Wrap(err, "DeleteRecord: AfterDelete callback returned an error")
+		}
 	}
 
 	return nil
