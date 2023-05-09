@@ -350,6 +350,11 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	for i := 0; i < vtyp.NumField(); i++ {
 		f := vtyp.Field(i)
 
+		columnName, _ := getSQLColumnInfo(f)
+		if columnName == "-" {
+			continue
+		}
+
 		if f.Tag.Get("readonly") != "" {
 			continue
 		}
@@ -364,7 +369,7 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			fields += ", "
 		}
 
-		fields += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
+		fields += columnName + " = " + makeParameter(len(values)+1)
 		values = append(values, ptr.Elem().Field(i).Interface())
 
 		modify = true
@@ -422,12 +427,17 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	for i := 0; i < vtyp.NumField(); i++ {
 		f := vtyp.Field(i)
 
+		columnName, _ := getSQLColumnInfo(f)
+		if columnName == "-" {
+			continue
+		}
+
 		if basicID && f.Name == "ID" && isZero(ptr.Elem().Field(i).Interface()) {
 			fetchID = true
 			continue
 		}
 
-		a1 = append(a1, getSQLColumnName(f))
+		a1 = append(a1, columnName)
 		a2 = append(a2, makeParameter(len(a1)))
 
 		values = append(values, ptr.Elem().Field(i).Interface())
@@ -482,7 +492,12 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	for i := 0; i < vtyp.NumField(); i++ {
 		f := vtyp.Field(i)
 
-		a1 = append(a1, getSQLColumnName(f))
+		columnName, _ := getSQLColumnInfo(f)
+		if columnName == "-" {
+			continue
+		}
+
+		a1 = append(a1, columnName)
 		a2 = append(a2, makeParameter(len(a1)))
 
 		values = append(values, ptr.Elem().Field(i).Interface())
