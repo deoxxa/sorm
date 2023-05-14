@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/serenize/snaker"
 )
 
@@ -89,22 +88,22 @@ func TableName(v interface{}) string {
 func ScanRows(rows *sql.Rows, out interface{}) error {
 	ptr := reflect.ValueOf(out)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	styp := ptr.Type().Elem()
 	if styp.Kind() != reflect.Slice {
-		return errors.Errorf("expected output to be pointer to slice; was instead pointer to %s", styp.Kind())
+		return fmt.Errorf("expected output to be pointer to slice; was instead pointer to %s", styp.Kind())
 	}
 
 	vtyp := styp.Elem()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
+		return fmt.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
 	}
 
 	names, err := rows.Columns()
 	if err != nil {
-		return errors.Wrap(err, "ScanRows")
+		return fmt.Errorf("ScanRows: %w", err)
 	}
 
 	indexes := make([]int, len(names))
@@ -143,7 +142,7 @@ outer:
 	}
 
 	if len(missing) > 0 {
-		return errors.Errorf("couldn't find fields on %s for these sql fields: %v", vtyp.Name(), missing)
+		return fmt.Errorf("couldn't find fields on %s for these sql fields: %v", vtyp.Name(), missing)
 	}
 
 	arr := reflect.Indirect(reflect.New(styp))
@@ -157,7 +156,7 @@ outer:
 		}
 
 		if err := rows.Scan(args...); err != nil {
-			return errors.Wrap(err, "ScanRows")
+			return fmt.Errorf("ScanRows: %w", err)
 		}
 
 		arr.Set(reflect.Append(arr, v))
@@ -177,12 +176,12 @@ type Querier interface {
 func CountWhere(ctx context.Context, db Querier, val interface{}, where string, args ...interface{}) (int, error) {
 	ptr := reflect.ValueOf(val)
 	if ptr.Kind() != reflect.Ptr {
-		return 0, errors.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
+		return 0, fmt.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Type().Elem()
 	if vtyp.Kind() != reflect.Struct {
-		return 0, errors.Errorf("expected output to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return 0, fmt.Errorf("expected output to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	tbl := getSQLTableName(vtyp)
@@ -193,7 +192,7 @@ func CountWhere(ctx context.Context, db Querier, val interface{}, where string, 
 
 	var n int
 	if err := db.QueryRowContext(ctx, "select count(*) from "+tbl+where, args...).Scan(&n); err != nil {
-		return 0, errors.Wrap(err, "CountWhere")
+		return 0, fmt.Errorf("CountWhere: %w", err)
 	}
 
 	return n, nil
@@ -206,17 +205,17 @@ func CountAll(ctx context.Context, db Querier, val interface{}) (int, error) {
 func FindWhere(ctx context.Context, db Querier, out interface{}, where string, args ...interface{}) error {
 	ptr := reflect.ValueOf(out)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	styp := ptr.Type().Elem()
 	if styp.Kind() != reflect.Slice {
-		return errors.Errorf("expected output to be pointer to slice; was instead pointer to %s", styp.Kind())
+		return fmt.Errorf("expected output to be pointer to slice; was instead pointer to %s", styp.Kind())
 	}
 
 	vtyp := styp.Elem()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
+		return fmt.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
 	}
 
 	tbl := getSQLTableName(vtyp)
@@ -227,7 +226,7 @@ func FindWhere(ctx context.Context, db Querier, out interface{}, where string, a
 
 	rows, err := db.QueryContext(ctx, "select * from "+tbl+where, args...)
 	if err != nil {
-		return errors.Wrap(err, "FindWhere")
+		return fmt.Errorf("FindWhere: %w", err)
 	}
 	defer rows.Close()
 
@@ -236,7 +235,7 @@ func FindWhere(ctx context.Context, db Querier, out interface{}, where string, a
 	}
 
 	if err := rows.Close(); err != nil {
-		return errors.Wrap(err, "FindWhere")
+		return fmt.Errorf("FindWhere: %w", err)
 	}
 
 	return nil
@@ -249,12 +248,12 @@ func FindAll(ctx context.Context, db Querier, out interface{}) error {
 func FindFirstWhere(ctx context.Context, db Querier, out interface{}, where string, args ...interface{}) error {
 	ptr := reflect.ValueOf(out)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("expected output to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("expected output to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return fmt.Errorf("expected output to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	arr := reflect.New(reflect.SliceOf(vtyp))
@@ -291,16 +290,16 @@ type AfterSaver interface {
 func SaveRecordWithTransaction(ctx context.Context, db *sql.DB, input interface{}) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return errors.Wrap(err, "SaveRecordWithTransaction: couldn't open a transaction")
+		return fmt.Errorf("SaveRecordWithTransaction: couldn't open a transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	if err := SaveRecord(ctx, tx, input); err != nil {
-		return errors.Wrap(err, "SaveRecordWithTransaction")
+		return fmt.Errorf("SaveRecordWithTransaction: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return errors.Wrap(err, "SaveRecordWithTransaction: couldn't commit transaction")
+		return fmt.Errorf("SaveRecordWithTransaction: couldn't commit transaction: %w", err)
 	}
 
 	return nil
@@ -309,23 +308,23 @@ func SaveRecordWithTransaction(ctx context.Context, db *sql.DB, input interface{
 func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeSaver); ok {
 		if err := v.BeforeSave(ctx, tx); err != nil {
-			return errors.Wrap(err, "SaveRecord: BeforeSave callback returned an error")
+			return fmt.Errorf("SaveRecord: BeforeSave callback returned an error: %w", err)
 		}
 	}
 
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("SaveRecord: expected input to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("SaveRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("SaveRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return fmt.Errorf("SaveRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	idFields := getSQLIDFields(vtyp)
 	if len(idFields) == 0 {
-		return errors.Errorf("SaveRecord: couldn't determine ID field(s)")
+		return fmt.Errorf("SaveRecord: couldn't determine ID field(s)")
 	}
 
 	var values []interface{}
@@ -346,7 +345,7 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	previous := reflect.New(vtyp)
 	if err := FindFirstWhere(ctx, tx, previous.Interface(), where, values...); err != nil {
-		return errors.Wrap(err, "SaveRecord: couldn't find record")
+		return fmt.Errorf("SaveRecord: couldn't find record: %w", err)
 	}
 
 	var fields string
@@ -388,12 +387,12 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	q := fmt.Sprintf("update %s %s %s", tbl, fields, where)
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
-		return errors.Wrap(err, "SaveRecord")
+		return fmt.Errorf("SaveRecord: %w", err)
 	}
 
 	if v, ok := input.(AfterSaver); ok {
 		if err := v.AfterSave(ctx, tx); err != nil {
-			return errors.Wrap(err, "SaveRecord: AfterSave callback returned an error")
+			return fmt.Errorf("SaveRecord: AfterSave callback returned an error: %w", err)
 		}
 	}
 
@@ -411,23 +410,23 @@ type AfterCreater interface {
 func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeCreater); ok {
 		if err := v.BeforeCreate(ctx, tx); err != nil {
-			return errors.Wrap(err, "CreateRecord: BeforeCreate callback returned an error")
+			return fmt.Errorf("CreateRecord: BeforeCreate callback returned an error: %w", err)
 		}
 	}
 
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("CreateRecord: expected input to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("CreateRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("CreateRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return fmt.Errorf("CreateRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	idFields := getSQLIDFields(vtyp)
 	if len(idFields) == 0 {
-		return errors.Errorf("CreateRecord: couldn't determine ID field(s)")
+		return fmt.Errorf("CreateRecord: couldn't determine ID field(s)")
 	}
 
 	var a1, a2 []string
@@ -462,18 +461,18 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	q := fmt.Sprintf("insert into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
-		return errors.Wrap(err, "CreateRecord")
+		return fmt.Errorf("CreateRecord: %w", err)
 	}
 
 	if basicID && fetchID {
 		if err := tx.QueryRowContext(ctx, "select last_insert_rowid()").Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
-			return errors.Wrap(err, "CreateRecord: couldn't fetch insert id")
+			return fmt.Errorf("CreateRecord: couldn't fetch insert id: %w", err)
 		}
 	}
 
 	if v, ok := input.(AfterCreater); ok {
 		if err := v.AfterCreate(ctx, tx); err != nil {
-			return errors.Wrap(err, "CreateRecord: AfterCreate callback returned an error")
+			return fmt.Errorf("CreateRecord: AfterCreate callback returned an error: %w", err)
 		}
 	}
 
@@ -491,23 +490,23 @@ type AfterReplacer interface {
 func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeReplacer); ok {
 		if err := v.BeforeReplace(ctx, tx); err != nil {
-			return errors.Wrap(err, "ReplaceRecord: BeforeReplace callback returned an error")
+			return fmt.Errorf("ReplaceRecord: BeforeReplace callback returned an error: %w", err)
 		}
 	}
 
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("ReplaceRecord: expected input to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("ReplaceRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("ReplaceRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return fmt.Errorf("ReplaceRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	idFields := getSQLIDFields(vtyp)
 	if len(idFields) == 0 {
-		return errors.Errorf("ReplaceRecord: couldn't determine ID field(s)")
+		return fmt.Errorf("ReplaceRecord: couldn't determine ID field(s)")
 	}
 
 	var a1, a2 []string
@@ -532,12 +531,12 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	q := fmt.Sprintf("insert or replace into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
-		return errors.Wrap(err, "ReplaceRecord")
+		return fmt.Errorf("ReplaceRecord: %w", err)
 	}
 
 	if v, ok := input.(AfterReplacer); ok {
 		if err := v.AfterReplace(ctx, tx); err != nil {
-			return errors.Wrap(err, "ReplaceRecord: AfterReplace callback returned an error")
+			return fmt.Errorf("ReplaceRecord: AfterReplace callback returned an error: %w", err)
 		}
 	}
 
@@ -555,23 +554,23 @@ type AfterDeleter interface {
 func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	if v, ok := input.(BeforeDeleter); ok {
 		if err := v.BeforeDelete(ctx, tx); err != nil {
-			return errors.Wrap(err, "DeleteRecord: BeforeDelete callback returned an error")
+			return fmt.Errorf("DeleteRecord: BeforeDelete callback returned an error: %w", err)
 		}
 	}
 
 	ptr := reflect.ValueOf(input)
 	if ptr.Kind() != reflect.Ptr {
-		return errors.Errorf("DeleteRecord: expected input to be a pointer; was instead %s", ptr.Kind())
+		return fmt.Errorf("DeleteRecord: expected input to be a pointer; was instead %s", ptr.Kind())
 	}
 
 	vtyp := ptr.Elem().Type()
 	if vtyp.Kind() != reflect.Struct {
-		return errors.Errorf("DeleteRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
+		return fmt.Errorf("DeleteRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
 	idFields := getSQLIDFields(vtyp)
 	if len(idFields) == 0 {
-		return errors.Errorf("DeleteRecord: couldn't determine ID field(s)")
+		return fmt.Errorf("DeleteRecord: couldn't determine ID field(s)")
 	}
 
 	var values []interface{}
@@ -595,12 +594,12 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	q := fmt.Sprintf("delete from %s %s", tbl, where)
 
 	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
-		return errors.Wrap(err, "DeleteRecord")
+		return fmt.Errorf("DeleteRecord: %w", err)
 	}
 
 	if v, ok := input.(AfterDeleter); ok {
 		if err := v.AfterDelete(ctx, tx); err != nil {
-			return errors.Wrap(err, "DeleteRecord: AfterDelete callback returned an error")
+			return fmt.Errorf("DeleteRecord: AfterDelete callback returned an error: %w", err)
 		}
 	}
 
