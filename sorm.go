@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"fknsrs.biz/p/reflectutil"
 	"github.com/serenize/snaker"
 )
 
@@ -27,54 +28,61 @@ func makeParameter(n int) string {
 	return fmt.Sprintf("%s%d", s, n)
 }
 
-func getSQLTableName(t reflect.Type) string {
-	for i := 0; i < t.NumField(); i++ {
-		if s := t.Field(i).Tag.Get("table"); s != "" {
-			return s
+var (
+	descriptionCache = map[reflect.Type]*reflectutil.StructDescription{}
+)
+
+func getDescriptionFromType(typ reflect.Type) (*reflectutil.StructDescription, error) {
+	if _, ok := descriptionCache[typ]; !ok {
+		d, err := reflectutil.GetDescriptionFromType(typ)
+		if err != nil {
+			return nil, err
+		}
+
+		descriptionCache[typ] = d
+	}
+
+	return descriptionCache[typ], nil
+}
+
+func getSQLTableName(vdesc *reflectutil.StructDescription) string {
+	for _, f := range vdesc.Fields() {
+		if t := f.Tag("table"); t != nil && t.Value() != "" {
+			return t.Value()
+		}
+
+		if t := f.Tag("sql"); t != nil {
+			if p := t.Parameter("table"); p != nil && p.Value() != "" {
+				return p.Value()
+			}
 		}
 	}
 
-	return snaker.CamelToSnake(t.Name()) + "s"
+	return snaker.CamelToSnake(vdesc.Name()) + "s"
 }
 
-func getSQLColumnInfo(f reflect.StructField) (string, []string) {
-	a := strings.Split(f.Tag.Get("sql"), ",")
-	if a[0] == "" {
-		a[0] = snaker.CamelToSnake(f.Name)
+func getSQLColumnName(f reflectutil.Field) string {
+	if t := f.Tag("sql"); t != nil && t.Value() != "" {
+		return t.Value()
 	}
 
-	return a[0], a[1:]
+	return snaker.CamelToSnake(f.Name())
 }
 
-func getSQLColumnName(f reflect.StructField) string {
-	name, _ := getSQLColumnInfo(f)
-	return name
-}
+func getSQLIDFields(vdesc *reflectutil.StructDescription) []reflectutil.Field {
+	var r []reflectutil.Field
 
-func arrayHas(a []string, s string) bool {
-	for _, e := range a {
-		if e == s {
-			return true
-		}
-	}
-
-	return false
-}
-
-func getSQLIDFields(t reflect.Type) []string {
-	var r []string
-
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-
-		if _, info := getSQLColumnInfo(f); arrayHas(info, "id") {
-			r = append(r, f.Name)
+	for _, f := range vdesc.Fields().WithoutTagValue("sql", "-") {
+		if t := f.Tag("sql"); t != nil && t.Parameter("id") != nil {
+			r = append(r, f)
 		}
 	}
 
 	if len(r) == 0 {
-		if _, ok := t.FieldByName("ID"); ok {
-			r = append(r, "ID")
+		if f := vdesc.Field("ID"); f != nil {
+			if t := f.Tag("sql"); t == nil || t.Value() != "-" {
+				r = append(r, *f)
+			}
 		}
 	}
 
@@ -82,7 +90,12 @@ func getSQLIDFields(t reflect.Type) []string {
 }
 
 func TableName(v interface{}) string {
-	return getSQLTableName(reflect.TypeOf(v))
+	d, err := getDescriptionFromType(reflect.TypeOf(v))
+	if err != nil {
+		panic(err)
+	}
+
+	return getSQLTableName(d)
 }
 
 func ScanRows(rows *sql.Rows, out interface{}) error {
@@ -101,39 +114,34 @@ func ScanRows(rows *sql.Rows, out interface{}) error {
 		return fmt.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
 	}
 
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
 	names, err := rows.Columns()
 	if err != nil {
 		return fmt.Errorf("ScanRows: %w", err)
 	}
 
-	indexes := make([]int, len(names))
+	indexes := make([][]int, len(names))
 	missing := make([]string, 0)
 
 outer:
 	for i, name := range names {
-		for j := 0; j < vtyp.NumField(); j++ {
-			f := vtyp.Field(j)
-
-			if a := strings.Split(f.Tag.Get("sql"), ","); a[0] == name {
-				indexes[i] = j
-				continue outer
-			}
+		if l := vdesc.Fields().WithTagValue("sql", name); len(l) == 1 {
+			indexes[i] = l[0].Index()
+			continue outer
 		}
 
-		for j := 0; j < vtyp.NumField(); j++ {
-			f := vtyp.Field(j)
-
-			if f.Name == name {
-				indexes[i] = j
-				continue outer
-			}
+		if f := vdesc.Field(name); f != nil {
+			indexes[i] = f.Index()
+			continue outer
 		}
 
-		for j := 0; j < vtyp.NumField(); j++ {
-			f := vtyp.Field(j)
-
-			if snaker.CamelToSnake(f.Name) == name {
-				indexes[i] = j
+		for _, f := range vdesc.Fields() {
+			if snaker.CamelToSnake(f.Name()) == name {
+				indexes[i] = f.Index()
 				continue outer
 			}
 		}
@@ -151,8 +159,8 @@ outer:
 		v := reflect.New(vtyp).Elem()
 
 		args := make([]interface{}, len(indexes))
-		for i, j := range indexes {
-			args[i] = v.Field(j).Addr().Interface()
+		for i, index := range indexes {
+			args[i] = v.FieldByIndex(index).Addr().Interface()
 		}
 
 		if err := rows.Scan(args...); err != nil {
@@ -184,7 +192,12 @@ func CountWhere(ctx context.Context, db Querier, val interface{}, where string, 
 		return 0, fmt.Errorf("expected output to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	tbl := getSQLTableName(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return 0, fmt.Errorf("CountWhere: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	tbl := getSQLTableName(vdesc)
 
 	if where != "" {
 		where = " " + where
@@ -218,7 +231,12 @@ func FindWhere(ctx context.Context, db Querier, out interface{}, where string, a
 		return fmt.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
 	}
 
-	tbl := getSQLTableName(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("FindWhere: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	tbl := getSQLTableName(vdesc)
 
 	if where != "" {
 		where = " " + where
@@ -322,7 +340,12 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return fmt.Errorf("SaveRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	idFields := getSQLIDFields(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("SaveRecord: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	idFields := getSQLIDFields(vdesc)
 	if len(idFields) == 0 {
 		return fmt.Errorf("SaveRecord: couldn't determine ID field(s)")
 	}
@@ -330,17 +353,15 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	var values []interface{}
 
 	var where string
-	for _, fieldName := range idFields {
-		f, _ := vtyp.FieldByName(fieldName)
-
+	for _, idField := range idFields {
 		if where == "" {
 			where += "where "
 		} else {
 			where += " and "
 		}
 
-		where += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
-		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
+		where += getSQLColumnName(idField) + " = " + makeParameter(len(values)+1)
+		values = append(values, ptr.Elem().FieldByIndex(idField.Index()).Interface())
 	}
 
 	previous := reflect.New(vtyp)
@@ -350,19 +371,16 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	var fields string
 	var modify bool
-	for i := 0; i < vtyp.NumField(); i++ {
-		f := vtyp.Field(i)
-
-		columnName, _ := getSQLColumnInfo(f)
-		if columnName == "-" {
+	for _, f := range vdesc.Fields().WithoutTagValue("sql", "-") {
+		if t := f.Tag("sql"); t != nil && t.Parameter("readonly") != nil {
 			continue
 		}
 
-		if f.Tag.Get("readonly") != "" {
+		if t := f.Tag("readonly"); t != nil && t.Value() != "" {
 			continue
 		}
 
-		if reflect.DeepEqual(previous.Elem().Field(i).Interface(), ptr.Elem().Field(i).Interface()) {
+		if reflect.DeepEqual(previous.Elem().FieldByIndex(f.Index()).Interface(), ptr.Elem().FieldByIndex(f.Index()).Interface()) {
 			continue
 		}
 
@@ -372,8 +390,8 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 			fields += ", "
 		}
 
-		fields += columnName + " = " + makeParameter(len(values)+1)
-		values = append(values, ptr.Elem().Field(i).Interface())
+		fields += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
+		values = append(values, ptr.Elem().FieldByIndex(f.Index()).Interface())
 
 		modify = true
 	}
@@ -382,7 +400,7 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return nil
 	}
 
-	tbl := getSQLTableName(vtyp)
+	tbl := getSQLTableName(vdesc)
 
 	q := fmt.Sprintf("update %s %s %s", tbl, fields, where)
 
@@ -424,7 +442,12 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return fmt.Errorf("CreateRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	idFields := getSQLIDFields(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("CreateRecord: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	idFields := getSQLIDFields(vdesc)
 	if len(idFields) == 0 {
 		return fmt.Errorf("CreateRecord: couldn't determine ID field(s)")
 	}
@@ -433,30 +456,23 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	var values []interface{}
 	var basicID, fetchID bool
 
-	if len(idFields) == 1 && idFields[0] == "ID" {
+	if len(idFields) == 1 && idFields[0].Name() == "ID" {
 		basicID = true
 	}
 
-	for i := 0; i < vtyp.NumField(); i++ {
-		f := vtyp.Field(i)
-
-		columnName, _ := getSQLColumnInfo(f)
-		if columnName == "-" {
-			continue
-		}
-
-		if basicID && f.Name == "ID" && isZero(ptr.Elem().Field(i).Interface()) {
+	for _, f := range vdesc.Fields().WithoutTagValue("sql", "-") {
+		if basicID && f.Name() == "ID" && isZero(ptr.Elem().FieldByIndex(f.Index()).Interface()) {
 			fetchID = true
 			continue
 		}
 
-		a1 = append(a1, columnName)
+		a1 = append(a1, getSQLColumnName(f))
 		a2 = append(a2, makeParameter(len(a1)))
 
-		values = append(values, ptr.Elem().Field(i).Interface())
+		values = append(values, ptr.Elem().FieldByIndex(f.Index()).Interface())
 	}
 
-	tbl := getSQLTableName(vtyp)
+	tbl := getSQLTableName(vdesc)
 
 	q := fmt.Sprintf("insert into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
@@ -504,7 +520,12 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return fmt.Errorf("ReplaceRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	idFields := getSQLIDFields(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("ReplaceRecord: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	idFields := getSQLIDFields(vdesc)
 	if len(idFields) == 0 {
 		return fmt.Errorf("ReplaceRecord: couldn't determine ID field(s)")
 	}
@@ -512,21 +533,14 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	var a1, a2 []string
 	var values []interface{}
 
-	for i := 0; i < vtyp.NumField(); i++ {
-		f := vtyp.Field(i)
-
-		columnName, _ := getSQLColumnInfo(f)
-		if columnName == "-" {
-			continue
-		}
-
-		a1 = append(a1, columnName)
+	for _, f := range vdesc.Fields().WithoutTagValue("sql", "-") {
+		a1 = append(a1, getSQLColumnName(f))
 		a2 = append(a2, makeParameter(len(a1)))
 
-		values = append(values, ptr.Elem().Field(i).Interface())
+		values = append(values, ptr.Elem().FieldByIndex(f.Index()).Interface())
 	}
 
-	tbl := getSQLTableName(vtyp)
+	tbl := getSQLTableName(vdesc)
 
 	q := fmt.Sprintf("insert or replace into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
@@ -568,7 +582,12 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		return fmt.Errorf("DeleteRecord: expected input to be pointer to struct; was instead pointer to %s", vtyp.Kind())
 	}
 
-	idFields := getSQLIDFields(vtyp)
+	vdesc, err := getDescriptionFromType(vtyp)
+	if err != nil {
+		return fmt.Errorf("DeleteRecord: could not get detailed reflection information for type %s: %w", vtyp.String(), err)
+	}
+
+	idFields := getSQLIDFields(vdesc)
 	if len(idFields) == 0 {
 		return fmt.Errorf("DeleteRecord: couldn't determine ID field(s)")
 	}
@@ -576,9 +595,7 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 	var values []interface{}
 
 	var where string
-	for _, fieldName := range idFields {
-		f, _ := vtyp.FieldByName(fieldName)
-
+	for _, f := range idFields {
 		if where == "" {
 			where += "where "
 		} else {
@@ -586,10 +603,10 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 		}
 
 		where += getSQLColumnName(f) + " = " + makeParameter(len(values)+1)
-		values = append(values, ptr.Elem().FieldByName(fieldName).Interface())
+		values = append(values, ptr.Elem().FieldByIndex(f.Index()).Interface())
 	}
 
-	tbl := getSQLTableName(vtyp)
+	tbl := getSQLTableName(vdesc)
 
 	q := fmt.Sprintf("delete from %s %s", tbl, where)
 

@@ -3,7 +3,9 @@ package sorm
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -19,6 +21,14 @@ func TestTableName(t *testing.T) {
 	a.Equal(TableName(MyType{}), "my_types")
 }
 
+func BenchmarkTableName(b *testing.B) {
+	type MyType struct{ ID string }
+
+	for i := 0; i < b.N; i++ {
+		TableName(MyType{})
+	}
+}
+
 func TestTableNameTag(t *testing.T) {
 	type MyType struct {
 		ID string `table:"alternative_name"`
@@ -27,6 +37,16 @@ func TestTableNameTag(t *testing.T) {
 	a := assert.New(t)
 
 	a.Equal(TableName(MyType{}), "alternative_name")
+}
+
+func BenchmarkTableNameTag(b *testing.B) {
+	type MyType struct {
+		ID string `table:"alternative_name"`
+	}
+
+	for i := 0; i < b.N; i++ {
+		TableName(MyType{})
+	}
 }
 
 type Object struct {
@@ -467,3 +487,169 @@ func TestAfterCreateError(t *testing.T) {
 	m.AssertExpectations(t)
 }
 
+func BenchmarkFindAllLargeResultSets(b *testing.B) {
+	type TestObject struct {
+		ID   int    `sql:"id"`
+		Name string `sql:"name"`
+	}
+
+	for _, count := range []int{1, 10, 100, 1000, 5000, 10000, 100000} {
+		b.Run(fmt.Sprintf("count=%d", count), func(b *testing.B) {
+			db := sql.OpenDB(&MockConnector{
+				driver: &MockDriver{
+					columns: []string{"id", "name"},
+					results: count,
+					fillRow: func(current, total int, values []driver.Value) error {
+						if current >= total {
+							return io.EOF
+						}
+
+						values[0] = int64(current)
+						values[1] = fmt.Sprintf("row_%08d", current)
+
+						return nil
+					},
+				},
+			})
+
+			for i := 0; i < b.N; i++ {
+				var a []TestObject
+				if err := FindAll(context.Background(), db, &a); err != nil {
+					panic(err)
+				}
+			}
+		})
+	}
+}
+
+func TestFindAllLargeResultSets(t *testing.T) {
+	type TestObject struct {
+		ID   int    `sql:"id"`
+		Name string `sql:"name"`
+	}
+
+	for _, count := range []int{1, 10, 100, 1000, 5000, 10000, 100000, 1000000} {
+		t.Run(fmt.Sprintf("count=%d", count), func(t *testing.T) {
+			a := assert.New(t)
+
+			db := sql.OpenDB(&MockConnector{
+				driver: &MockDriver{
+					columns: []string{"id", "name"},
+					results: count,
+					fillRow: func(current, total int, values []driver.Value) error {
+						if current >= total {
+							return io.EOF
+						}
+
+						values[0] = int64(current)
+						values[1] = fmt.Sprintf("row_%08d", current)
+
+						return nil
+					},
+				},
+			})
+
+			var l []TestObject
+			a.NoError(FindAll(context.Background(), db, &l))
+			a.Len(l, count)
+
+			a.Equal(TestObject{0, "row_00000000"}, l[0])
+			a.Equal(TestObject{count - 1, fmt.Sprintf("row_%08d", count-1)}, l[count-1])
+		})
+	}
+}
+
+var ErrUnimplemented = fmt.Errorf("unimplemented")
+
+type MockFillRowFunc func(current, total int, values []driver.Value) error
+
+type MockDriver struct {
+	columns []string
+	results int
+	fillRow MockFillRowFunc
+}
+
+func (d *MockDriver) Open(name string) (driver.Conn, error) {
+	return &MockConn{driver: d}, nil
+}
+
+type MockConnector struct {
+	driver *MockDriver
+}
+
+func (c *MockConnector) Driver() driver.Driver {
+	return c.driver
+}
+
+func (c *MockConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	return &MockConn{driver: c.driver}, nil
+}
+
+type MockConn struct{ driver *MockDriver }
+
+func (c *MockConn) Prepare(query string) (driver.Stmt, error) {
+	return &MockStmt{driver: c.driver}, nil
+}
+
+func (c *MockConn) Close() error {
+	return nil
+}
+
+func (c *MockConn) Begin() (driver.Tx, error) {
+	return nil, ErrUnimplemented
+}
+
+func (c *MockConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return nil, ErrUnimplemented
+}
+
+type MockStmt struct{ driver *MockDriver }
+
+func (s *MockStmt) Close() error {
+	return nil
+}
+
+func (s *MockStmt) NumInput() int {
+	return 0
+}
+
+func (s *MockStmt) Exec(args []driver.Value) (driver.Result, error) {
+	return &MockResult{}, nil
+}
+
+func (s *MockStmt) Query(args []driver.Value) (driver.Rows, error) {
+	return &MockRows{driver: s.driver}, nil
+}
+
+type MockResult struct{}
+
+func (r *MockResult) LastInsertId() (int64, error) {
+	return 0, ErrUnimplemented
+}
+
+func (r *MockResult) RowsAffected() (int64, error) {
+	return 0, ErrUnimplemented
+}
+
+type MockRows struct {
+	driver  *MockDriver
+	counter int
+}
+
+func (r *MockRows) Columns() []string {
+	return r.driver.columns
+}
+
+func (r *MockRows) Close() error {
+	return nil
+}
+
+func (r *MockRows) Next(values []driver.Value) error {
+	if err := r.driver.fillRow(r.counter, r.driver.results, values); err != nil {
+		return err
+	}
+
+	r.counter++
+
+	return nil
+}
