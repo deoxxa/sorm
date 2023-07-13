@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -796,4 +797,79 @@ func (r *MockRows) Next(values []driver.Value) error {
 	r.counter++
 
 	return nil
+}
+
+type simpleQueryLog struct {
+	phase    string
+	query    string
+	args     []interface{}
+	duration time.Duration
+	err      error
+}
+
+type simpleQueryLogger struct {
+	logs []simpleQueryLog
+}
+
+func (s *simpleQueryLogger) LogQuery(query string, args []interface{}) {
+	s.logs = append(s.logs, simpleQueryLog{phase: "before", query: query, args: args})
+}
+
+func (s *simpleQueryLogger) LogQueryAfter(query string, args []interface{}, duration time.Duration, err error) {
+	s.logs = append(s.logs, simpleQueryLog{phase: "after", query: query, args: args, duration: duration.Round(time.Second), err: err})
+}
+
+func TestQueryLogger(t *testing.T) {
+	a := assert.New(t)
+
+	var logger simpleQueryLogger
+
+	SetQueryLogger(&logger)
+	defer func() { SetQueryLogger(nil) }()
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectQuery(`select \* from objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+
+	var r []Object
+	a.NoError(FindWhere(context.Background(), db, &r, "where id = $1", 1))
+
+	a.Equal([]Object{{ID: 1, Name: "test1"}}, r)
+
+	a.Equal([]simpleQueryLog{
+		{phase: "before", query: "select * from objects where id = $1", args: []interface{}{1}},
+		{phase: "after", query: "select * from objects where id = $1", args: []interface{}{1}, duration: 0, err: nil},
+	}, logger.logs)
+}
+
+func TestQueryLoggerFunc(t *testing.T) {
+	a := assert.New(t)
+
+	var logs []simpleQueryLog
+
+	SetQueryLoggerFunc(func(query string, args []interface{}) {
+		logs = append(logs, simpleQueryLog{query: query, args: args})
+	})
+	defer func() { SetQueryLogger(nil) }()
+
+	db, mockDB, err := sqlmock.New()
+	if !a.NoError(err) {
+		return
+	}
+	defer db.Close()
+
+	mockDB.ExpectQuery(`select \* from objects where id = \$1`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "test1"))
+
+	var r []Object
+	a.NoError(FindWhere(context.Background(), db, &r, "where id = $1", 1))
+
+	a.Equal([]Object{{ID: 1, Name: "test1"}}, r)
+
+	a.Equal([]simpleQueryLog{
+		{query: "select * from objects where id = $1", args: []interface{}{1}},
+	}, logs)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"fknsrs.biz/p/reflectutil"
 	"github.com/serenize/snaker"
@@ -17,6 +18,32 @@ var (
 
 func SetParameterPrefix(s string) {
 	parameterPrefix = s
+}
+
+type QueryLogger interface {
+	LogQuery(query string, vars []interface{})
+}
+
+type QueryLoggerAfter interface {
+	LogQueryAfter(query string, vars []interface{}, duration time.Duration, err error)
+}
+
+var (
+	queryLogger QueryLogger
+)
+
+func SetQueryLogger(q QueryLogger) {
+	queryLogger = q
+}
+
+type QueryLoggerFunc func(query string, vars []interface{})
+
+func (f QueryLoggerFunc) LogQuery(query string, vars []interface{}) {
+	f(query, vars)
+}
+
+func SetQueryLoggerFunc(fn QueryLoggerFunc) {
+	SetQueryLogger(fn)
 }
 
 func makeParameter(n int) string {
@@ -239,9 +266,29 @@ func CountWhere(ctx context.Context, db Querier, val interface{}, where string, 
 		where = " " + where
 	}
 
+	query := "select count(*) from " + tbl + where
+
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, args)
+	}
+
+	start := time.Now()
+
 	var n int
-	if err := db.QueryRowContext(ctx, "select count(*) from "+tbl+where, args...).Scan(&n); err != nil {
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), err)
+			}
+		}
+
 		return 0, fmt.Errorf("CountWhere: %w", err)
+	}
+
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), nil)
+		}
 	}
 
 	return n, nil
@@ -278,18 +325,50 @@ func FindWhere(ctx context.Context, db Querier, out interface{}, where string, a
 		where = " " + where
 	}
 
-	rows, err := db.QueryContext(ctx, "select * from "+tbl+where, args...)
+	query := "select * from " + tbl + where
+
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, args)
+	}
+
+	start := time.Now()
+
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("FindWhere: %w", err)
 	}
 	defer rows.Close()
 
 	if err := ScanRows(rows, out); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), err)
+			}
+		}
+
 		return err
 	}
 
 	if err := rows.Close(); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("FindWhere: %w", err)
+	}
+
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, args, time.Now().Sub(start), nil)
+		}
 	}
 
 	return nil
@@ -438,10 +517,28 @@ func SaveRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	tbl := getSQLTableName(vdesc)
 
-	q := fmt.Sprintf("update %s %s %s", tbl, fields, where)
+	query := fmt.Sprintf("update %s %s %s", tbl, fields, where)
 
-	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, values)
+	}
+
+	start := time.Now()
+
+	if _, err := tx.ExecContext(ctx, query, values...); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("SaveRecord: %w", err)
+	}
+
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+		}
 	}
 
 	if v, ok := input.(AfterSaver); ok {
@@ -510,15 +607,53 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	tbl := getSQLTableName(vdesc)
 
-	q := fmt.Sprintf("insert into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
+	query := fmt.Sprintf("insert into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
-	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, values)
+	}
+
+	start := time.Now()
+
+	if _, err := tx.ExecContext(ctx, query, values...); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("CreateRecord: %w", err)
 	}
 
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+		}
+	}
+
 	if basicID && fetchID {
-		if err := tx.QueryRowContext(ctx, "select last_insert_rowid()").Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
+		query := "select last_insert_rowid()"
+
+		if queryLogger != nil {
+			queryLogger.LogQuery(query, values)
+		}
+
+		start := time.Now()
+
+		if err := tx.QueryRowContext(ctx, query).Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
+			if queryLogger != nil {
+				if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+					queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+				}
+			}
+
 			return fmt.Errorf("CreateRecord: couldn't fetch insert id: %w", err)
+		}
+
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+			}
 		}
 	}
 
@@ -578,10 +713,28 @@ func ReplaceRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	tbl := getSQLTableName(vdesc)
 
-	q := fmt.Sprintf("insert or replace into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
+	query := fmt.Sprintf("insert or replace into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
 
-	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, values)
+	}
+
+	start := time.Now()
+
+	if _, err := tx.ExecContext(ctx, query, values...); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("ReplaceRecord: %w", err)
+	}
+
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+		}
 	}
 
 	if v, ok := input.(AfterReplacer); ok {
@@ -644,10 +797,28 @@ func DeleteRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	tbl := getSQLTableName(vdesc)
 
-	q := fmt.Sprintf("delete from %s %s", tbl, where)
+	query := fmt.Sprintf("delete from %s %s", tbl, where)
 
-	if _, err := tx.ExecContext(ctx, q, values...); err != nil {
+	if queryLogger != nil {
+		queryLogger.LogQuery(query, values)
+	}
+
+	start := time.Now()
+
+	if _, err := tx.ExecContext(ctx, query, values...); err != nil {
+		if queryLogger != nil {
+			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+			}
+		}
+
 		return fmt.Errorf("DeleteRecord: %w", err)
+	}
+
+	if queryLogger != nil {
+		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+			queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+		}
 	}
 
 	if v, ok := input.(AfterDeleter); ok {
