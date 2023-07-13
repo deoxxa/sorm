@@ -493,32 +493,26 @@ func BenchmarkFindAllLargeResultSets(b *testing.B) {
 		Name string `sql:"name"`
 	}
 
-	for _, count := range []int{1, 10, 100, 1000, 5000, 10000, 100000} {
-		b.Run(fmt.Sprintf("count=%d", count), func(b *testing.B) {
-			db := sql.OpenDB(&MockConnector{
-				driver: &MockDriver{
-					columns: []string{"id", "name"},
-					results: count,
-					fillRow: func(current, total int, values []driver.Value) error {
-						if current >= total {
-							return io.EOF
-						}
-
-						values[0] = int64(current)
-						values[1] = fmt.Sprintf("row_%08d", current)
-
-						return nil
-					},
-				},
-			})
-
-			for i := 0; i < b.N; i++ {
-				var a []TestObject
-				if err := FindAll(context.Background(), db, &a); err != nil {
-					panic(err)
+	db := sql.OpenDB(&MockConnector{
+		driver: &MockDriver{
+			columns: []string{"id", "name"},
+			results: b.N,
+			fillRow: func(current, total int, values []driver.Value) error {
+				if current >= total {
+					return io.EOF
 				}
-			}
-		})
+
+				values[0] = int64(current)
+				values[1] = "name"
+
+				return nil
+			},
+		},
+	})
+
+	var a []TestObject
+	if err := FindAll(context.Background(), db, &a); err != nil {
+		panic(err)
 	}
 }
 
@@ -555,6 +549,156 @@ func TestFindAllLargeResultSets(t *testing.T) {
 
 			a.Equal(TestObject{0, "row_00000000"}, l[0])
 			a.Equal(TestObject{count - 1, fmt.Sprintf("row_%08d", count-1)}, l[count-1])
+		})
+	}
+}
+
+type goodScanner struct{ Value string }
+
+func (s *goodScanner) Scan(src interface{}) error {
+	if src, ok := src.(string); ok {
+		s.Value = src
+		return nil
+	}
+
+	return fmt.Errorf("goodScanner: unexpected value type: %T", src)
+}
+
+type badScanner struct{ Value string }
+
+func (s *badScanner) Scan(src interface{}) error {
+	return fmt.Errorf("badScanner: intentional error")
+}
+
+type overrideScanner struct{ Value *badScanner }
+
+func (s *overrideScanner) Scan(src interface{}) error {
+	if src, ok := src.(string); ok {
+		s.Value.Value = src
+		return nil
+	}
+
+	return fmt.Errorf("overrideScanner: unexpected value type: %T", src)
+}
+
+type testScannersNoScanner struct {
+	ID    int `sql:",table:objects"`
+	Value string
+}
+
+type testScannersGoodScanner struct {
+	ID    int `sql:",table:objects"`
+	Value goodScanner
+}
+
+type testScannersBadScanner struct {
+	ID    int `sql:",table:objects"`
+	Value badScanner
+}
+
+type testScannersGoodOverride struct {
+	ID    int `sql:",table:objects"`
+	Value badScanner
+}
+
+func (o *testScannersGoodOverride) OverrideScan(names []string, scanners []sql.Scanner) error {
+	for i, name := range names {
+		switch name {
+		case "ID":
+			// nothing
+		case "Value":
+			scanners[i] = &overrideScanner{Value: &o.Value}
+		default:
+			return fmt.Errorf("testScannersGoodOverride: field %d (%s) unrecognised", i, name)
+		}
+	}
+
+	return nil
+}
+
+type testScannersBadOverride struct {
+	ID    int `sql:",table:objects"`
+	Value badScanner
+}
+
+func (o *testScannersBadOverride) OverrideScan(names []string, scanners []sql.Scanner) error {
+	return fmt.Errorf("testScannersBadOverride: intentional error")
+}
+
+func TestOverrideScanner(t *testing.T) {
+	for _, e := range []struct {
+		name          string
+		err           string
+		out, expected interface{}
+	}{
+		{"no scanner", "", &testScannersNoScanner{}, &testScannersNoScanner{1, "success"}},
+		{"good scanner", "", &testScannersGoodScanner{}, &testScannersGoodScanner{1, goodScanner{"success"}}},
+		{"bad scanner", "badScanner: intentional error", &testScannersBadScanner{}, &testScannersBadScanner{}},
+		{"good override", "", &testScannersGoodOverride{}, &testScannersGoodOverride{1, badScanner{"success"}}},
+		{"bad override", "testScannersBadOverride: intentional error", &testScannersBadOverride{}, &testScannersBadOverride{}},
+	} {
+		t.Run(e.name, func(t *testing.T) {
+			a := assert.New(t)
+
+			db, mockDB, err := sqlmock.New()
+			if !a.NoError(err) {
+				return
+			}
+			defer db.Close()
+
+			mockDB.ExpectQuery(`select \* from objects limit 1`).WillReturnRows(sqlmock.NewRows([]string{"id", "value"}).AddRow(1, "success"))
+
+			err = FindFirst(context.Background(), db, e.out)
+			if e.err != "" {
+				a.Error(err)
+				a.ErrorContains(err, e.err)
+				a.Equal(e.out, e.expected)
+			} else {
+				a.NoError(err)
+				a.Equal(e.out, e.expected)
+			}
+		})
+	}
+}
+
+func BenchmarkOverrideScanner(b *testing.B) {
+	for _, e := range []struct {
+		name string
+		fail bool
+		out  func() interface{}
+	}{
+		{"no scanner", false, func() interface{} { return &[]testScannersNoScanner{} }},
+		{"good scanner", false, func() interface{} { return &[]testScannersGoodScanner{} }},
+		{"bad scanner", true, func() interface{} { return &[]testScannersBadScanner{} }},
+		{"good override", false, func() interface{} { return &[]testScannersGoodOverride{} }},
+		{"bad override", true, func() interface{} { return &[]testScannersBadOverride{} }},
+	} {
+		b.Run(e.name, func(b *testing.B) {
+			a := assert.New(b)
+
+			db := sql.OpenDB(&MockConnector{
+				driver: &MockDriver{
+					columns: []string{"id", "value"},
+					results: b.N,
+					fillRow: func(current, total int, values []driver.Value) error {
+						if current >= total {
+							return io.EOF
+						}
+
+						values[0] = int64(current)
+						values[1] = "success"
+
+						return nil
+					},
+				},
+			})
+
+			err := FindAll(context.Background(), db, e.out())
+			if e.fail {
+				a.Error(err)
+			} else {
+				a.NoError(err)
+			}
 		})
 	}
 }

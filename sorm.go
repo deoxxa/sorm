@@ -98,6 +98,14 @@ func TableName(v interface{}) string {
 	return getSQLTableName(d)
 }
 
+type OverrideScanner interface {
+	OverrideScan(names []string, out []sql.Scanner) error
+}
+
+var (
+	overrideScannerType = reflect.TypeOf((*OverrideScanner)(nil)).Elem()
+)
+
 func ScanRows(rows *sql.Rows, out interface{}) error {
 	ptr := reflect.ValueOf(out)
 	if ptr.Kind() != reflect.Ptr {
@@ -114,6 +122,8 @@ func ScanRows(rows *sql.Rows, out interface{}) error {
 		return fmt.Errorf("expected output to be pointer to slice of struct; was instead pointer to slice of %s", vtyp.Kind())
 	}
 
+	isOverrideScanner := reflect.PtrTo(vtyp).Implements(overrideScannerType)
+
 	vdesc, err := getDescriptionFromType(vtyp)
 	if err != nil {
 		return fmt.Errorf("could not get detailed reflection information for type %s: %w", vtyp.String(), err)
@@ -124,23 +134,36 @@ func ScanRows(rows *sql.Rows, out interface{}) error {
 		return fmt.Errorf("ScanRows: %w", err)
 	}
 
+	var goNames []string
+	if isOverrideScanner {
+		goNames = make([]string, len(names))
+	}
 	indexes := make([][]int, len(names))
 	missing := make([]string, 0)
 
 outer:
 	for i, name := range names {
 		if l := vdesc.Fields().WithTagValue("sql", name); len(l) == 1 {
+			if isOverrideScanner {
+				goNames[i] = l[0].Name()
+			}
 			indexes[i] = l[0].Index()
 			continue outer
 		}
 
 		if f := vdesc.Field(name); f != nil {
+			if isOverrideScanner {
+				goNames[i] = f.Name()
+			}
 			indexes[i] = f.Index()
 			continue outer
 		}
 
 		for _, f := range vdesc.Fields() {
 			if snaker.CamelToSnake(f.Name()) == name {
+				if isOverrideScanner {
+					goNames[i] = f.Name()
+				}
 				indexes[i] = f.Index()
 				continue outer
 			}
@@ -156,11 +179,24 @@ outer:
 	arr := reflect.Indirect(reflect.New(styp))
 
 	for rows.Next() {
-		v := reflect.New(vtyp).Elem()
+		p := reflect.New(vtyp)
+		v := p.Elem()
+
+		var scanners []sql.Scanner
+		if isOverrideScanner {
+			scanners = make([]sql.Scanner, len(goNames))
+			if err := p.Interface().(OverrideScanner).OverrideScan(goNames, scanners); err != nil {
+				return fmt.Errorf("could not get scanner overrides: %w", err)
+			}
+		}
 
 		args := make([]interface{}, len(indexes))
 		for i, index := range indexes {
-			args[i] = v.FieldByIndex(index).Addr().Interface()
+			if isOverrideScanner && scanners[i] != nil {
+				args[i] = scanners[i]
+			} else {
+				args[i] = v.FieldByIndex(index).Addr().Interface()
+			}
 		}
 
 		if err := rows.Scan(args...); err != nil {
