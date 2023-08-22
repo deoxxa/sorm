@@ -607,7 +607,12 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	tbl := getSQLTableName(vdesc)
 
-	query := fmt.Sprintf("insert into %s (%s) values (%s)", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "))
+	var insertSuffix string
+	if basicID && fetchID {
+		insertSuffix = " returning id"
+	}
+
+	query := fmt.Sprintf("insert into %s (%s) values (%s)%s", tbl, strings.Join(a1, ", "), strings.Join(a2, ", "), insertSuffix)
 
 	if queryLogger != nil {
 		queryLogger.LogQuery(query, values)
@@ -615,45 +620,25 @@ func CreateRecord(ctx context.Context, tx *sql.Tx, input interface{}) error {
 
 	start := time.Now()
 
-	if _, err := tx.ExecContext(ctx, query, values...); err != nil {
-		if queryLogger != nil {
-			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
-				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
-			}
-		}
-
-		return fmt.Errorf("CreateRecord: %w", err)
-	}
-
-	if queryLogger != nil {
-		if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
-			queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
-		}
-	}
-
 	if basicID && fetchID {
-		query := "select last_insert_rowid()"
-
-		if queryLogger != nil {
-			queryLogger.LogQuery(query, values)
-		}
-
-		start := time.Now()
-
-		if err := tx.QueryRowContext(ctx, query).Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
+		if err := tx.QueryRowContext(ctx, query, values...).Scan(ptr.Elem().FieldByName("ID").Addr().Interface()); err != nil {
 			if queryLogger != nil {
 				if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
 					queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
 				}
 			}
 
-			return fmt.Errorf("CreateRecord: couldn't fetch insert id: %w", err)
+			return fmt.Errorf("CreateRecord: %w", err)
 		}
-
-		if queryLogger != nil {
-			if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
-				queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), nil)
+	} else {
+		if _, err := tx.ExecContext(ctx, query, values...); err != nil {
+			if queryLogger != nil {
+				if queryLogger, ok := queryLogger.(QueryLoggerAfter); ok {
+					queryLogger.LogQueryAfter(query, values, time.Now().Sub(start), err)
+				}
 			}
+
+			return fmt.Errorf("CreateRecord: %w", err)
 		}
 	}
 
